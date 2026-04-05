@@ -11,15 +11,19 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 配置编译环境 (已修复 GCC 依赖)
+      - name: 配置编译环境 (已完全恢复原样，绝不动系统)
         run: |
           sudo apt-get update
-          # 新增了 gcc-aarch64-linux-gnu 和 gcc-arm-linux-gnueabi 解决编译器找不到的报错
-          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip python3 python2
+          sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip python3 python2
 
       - name: 下载 Proton-Clang 工具链
         run: |
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
+
+      - name: 下载缺少的 GCC 编译器 (单独下载，解决 GCC 报错)
+        run: |
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git gcc-arm64
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git gcc-arm32
 
       - name: 下载 K40 Pro (Haydn) 内核源码 (AGNi 定制版)
         run: |
@@ -30,35 +34,37 @@ jobs:
           cd kernel_workspace
           curl -LSs "https://raw.githubusercontent.com/sukisu-ultra/sukisu-ultra/main/kernel/setup.sh" | bash -
 
-      - name: 编译内核并注入 DIY 名字 (已修复 defconfig 找不到问题)
+      - name: 编译内核并注入 DIY 名字
         run: |
           cd kernel_workspace
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          # 将刚才单独下载的 GCC 路径也添加进环境变量
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/gcc-arm64/bin:$GITHUB_WORKSPACE/gcc-arm32/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          # 匹配我们刚才下载的 GCC 前缀
+          export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
           export CC=clang
           
-          # 【智能修复】：自动探测大佬设定的配置文件名 (涵盖 haydn, lahaina, sm8350 等常见命名)
+          # 【智能修复】：自动探测大佬设定的配置文件名
           DEFCONFIG_FULL_PATH=$(find arch/arm64/configs -name "*haydn*defconfig" -o -name "*lahaina*qgki*defconfig" -o -name "*sm8350*defconfig" | head -n 1)
           DEFCONFIG_NAME=${DEFCONFIG_FULL_PATH#arch/arm64/configs/}
           echo "==== 成功找到配置文件: $DEFCONFIG_NAME ===="
           
-          # 生成基础配置 (使用自动找到的文件名)
+          # 生成基础配置
           make O=out $DEFCONFIG_NAME
           
-          # 【DIY 魔法】：修改内核名称 (记得在这里改成你想要的名字哦)
+          # 【DIY 魔法】：修改内核名称 (记得把 My_DIY_SukiSU 换成你的专属名字)
           sed -i 's/CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="-My_DIY_SukiSU"/g' out/.config
           
           # 开始满血多线程编译
-          make -j$(nproc --all) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- Image dtb.img dtbo.img
+          make -j$(nproc --all) O=out CC=clang CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- Image dtb.img dtbo.img
 
       - name: 打包 AnyKernel3 刷机包
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           cp kernel_workspace/out/arch/arm64/boot/Image AnyKernel3/
-          cp kernel_workspace/out/arch/arm64/boot/dts/vendor/qcom/*.dtb AnyKernel3/dtb || true
+          cp kernel_workspace/out/arch/arm64/boot/dts/vendor/qcom/*.dtb AnyKernel3/dtb/ || true
           cp kernel_workspace/out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
           
           cd AnyKernel3
