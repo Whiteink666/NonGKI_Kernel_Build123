@@ -1,4 +1,4 @@
-name: Build DIY SukiSU Kernel for K40 Pro (Haydn)
+name: Build My Custom SKSU Kernel for K40 Pro
 
 on:
   workflow_dispatch:
@@ -8,74 +8,69 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: 检出代码
+      - name: 检出你专属的内核源码
         uses: actions/checkout@v4
+        with:
+          # 【重要】：强行指定拉取支持 MIUI 14 / Android 13 的正确分支
+          ref: AGNi_haydn_MIUI_ST
 
-      - name: 配置编译环境 (已完全恢复原样，绝不动系统)
+      - name: 配置编译环境
         run: |
           sudo apt-get update
           sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip python3 python2
 
-      - name: 下载 Proton-Clang 工具链
+      - name: 下载编译工具链 (Proton-Clang + GCC双生花)
         run: |
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
-
-      - name: 下载缺少的 GCC 编译器 (单独下载，解决 GCC 报错)
-        run: |
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git gcc-arm64
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git gcc-arm32
 
-      - name: 下载 K40 Pro (Haydn) 内核源码 (AGNi 定制版)
-        run: |
-          git clone --depth=1 https://github.com/psndna88/AGNi_pureMIUI.git kernel_workspace
-
       - name: 注入 SukiSU Ultra (SKSU)
         run: |
-          cd kernel_workspace
+          # 每次编译都会拉取当前最新版的 SKSU 注入到你的内核源码里
           curl -LSs "https://raw.githubusercontent.com/sukisu-ultra/sukisu-ultra/main/kernel/setup.sh" | bash -
 
-      - name: 编译内核并注入 DIY 名字
+      - name: 开始编译并强行注入专属名字
         run: |
-          cd kernel_workspace
-          # 将刚才单独下载的 GCC 路径也添加进环境变量
           export PATH="$GITHUB_WORKSPACE/clang/bin:$GITHUB_WORKSPACE/gcc-arm64/bin:$GITHUB_WORKSPACE/gcc-arm32/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
-          # 匹配我们刚才下载的 GCC 前缀
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=arm-linux-androideabi-
           export CC=clang
           
-          # 【智能修复】：自动探测大佬设定的配置文件名
-          DEFCONFIG_FULL_PATH=$(find arch/arm64/configs -name "*haydn*defconfig" -o -name "*lahaina*qgki*defconfig" -o -name "*sm8350*defconfig" | head -n 1)
-          DEFCONFIG_NAME=${DEFCONFIG_FULL_PATH#arch/arm64/configs/}
-          echo "==== 成功找到配置文件: $DEFCONFIG_NAME ===="
+          # 1. 生成骁龙 888 (Lahaina) 的底层通用主配置
+          make O=out vendor/lahaina-qgki_defconfig
           
-          # 生成基础配置
-          make O=out $DEFCONFIG_NAME
+          # 2. 将 K40 Pro (Haydn) 的专属补丁配置合并进去
+          scripts/kconfig/merge_config.sh -m -O out out/.config arch/arm64/configs/vendor/haydn_QGKI.config
           
-          # 【DIY 魔法】：修改内核名称 (记得把 My_DIY_SukiSU 换成你的专属名字)
+          # 3. 重新整理合并后的配置文件
+          make O=out olddefconfig
+          
+          # 4. 【终极强行改名魔法】：无视一切覆盖，在最后关头强行打上你的烙印！
+          # （修改 "-My_DIY_SukiSU" 为你想要的名字，注意保留前面的短横线或空格）
           sed -i 's/CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="-My_DIY_SukiSU"/g' out/.config
           
-          # 开始满血多线程编译
+          # 5. 火力全开，开始满血编译！
           make -j$(nproc --all) O=out CC=clang CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- Image dtb.img dtbo.img
 
       - name: 打包 AnyKernel3 刷机包
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-          cp kernel_workspace/out/arch/arm64/boot/Image AnyKernel3/
-          cp kernel_workspace/out/arch/arm64/boot/dts/vendor/qcom/*.dtb AnyKernel3/dtb/ || true
-          cp kernel_workspace/out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
+          cp out/arch/arm64/boot/Image AnyKernel3/
+          cp out/arch/arm64/boot/dts/vendor/qcom/*.dtb AnyKernel3/dtb/ || true
+          cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
           
           cd AnyKernel3
-          sed -i 's/kernel.string=.*/kernel.string=DIY SKSU Ultra Kernel for Haydn/' anykernel.sh
+          sed -i 's/kernel.string=.*/kernel.string=My DIY SKSU Kernel for Haydn/' anykernel.sh
           sed -i 's/device.name1=.*/device.name1=haydn/' anykernel.sh
           sed -i 's/device.name2=.*/device.name2=K40 Pro/' anykernel.sh
           
-          zip -r9 ../DIY-SukiSU-Haydn-Kernel.zip * -x .git README.md *placeholder
+          zip -r9 ../My-Custom-Kernel.zip * -x .git README.md *placeholder
 
       - name: 上传编译好的刷机包
         uses: actions/upload-artifact@v4
         with:
-          name: DIY-SukiSU-Haydn-Kernel
-          path: DIY-SukiSU-Haydn-Kernel.zip
+          name: My-Custom-Haydn-Kernel
+          path: My-Custom-Kernel.zip
