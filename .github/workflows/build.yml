@@ -1,66 +1,69 @@
-name: Build Kernel
-run-name: Build haydn (K40 Pro) MIUI14 + SukiSU
+name: Build SukiSU Ultra for K40 Pro (MIUI 14)
+
 on:
   workflow_dispatch:
 
 jobs:
-  build_job:
+  build:
     runs-on: ubuntu-22.04
-    env:
-      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
-      CCACHE_NOHASHDIR: "true"
-      CCACHE_HARDLINK: "true"
-      CI: "false"
+
     steps:
-      - name: 1. 创建工作目录
-        run: |
-          mkdir -p $GITHUB_WORKSPACE/kernel_workspace
-          cd $GITHUB_WORKSPACE/kernel_workspace
+      - name: 检出代码
+        uses: actions/checkout@v4
 
-      - name: 2. 下载 Clang 18
+      - name: 配置编译环境
         run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace
-          wget -q https://github.com/ZyCromerZ/Clang/releases/download/18.0.0git-20240124-release/Clang-18.0.0git-20240124.tar.gz
-          mkdir -p clang
-          tar -xzf Clang-18.0.0git-20240124.tar.gz -C clang
+          sudo apt-get update
+          sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip python3 python2
 
-      - name: 3. 拉取 MIUI14 内核源码（haydn 安卓13）
+      - name: 下载 Proton-Clang 工具链
         run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace
-          git clone https://github.com/haojiayang/android_kernel_xiaomi_sm8350.git --depth=1 -b android-13-development android_kernel
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
+
+      - name: 下载 K40 Pro (Haydn) 内核源码
+        run: |
+          # 这里默认使用了小米官方开源的 Android 13 / MIUI 14 分支 (haydn-t-oss)
+          # 如果你有自己心仪的、大佬专门优化过的源码链接，直接替换下面这个 GitHub 地址和分支名即可
+          git clone --depth=1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git -b haydn-t-oss kernel_workspace
+
+      - name: 注入 SukiSU Ultra (SKSU)
+        run: |
+          cd kernel_workspace
+          # SukiSU Ultra 官方的集成脚本
+          curl -LSs "https://raw.githubusercontent.com/sukisu-ultra/sukisu-ultra/main/kernel/setup.sh" | bash -
+
+      - name: 编译内核
+        run: |
+          cd kernel_workspace
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CC=clang
+          
+          # 生成 K40 Pro 的配置文件
+          make O=out vendor/haydn_defconfig
+          
+          # 开始多线程满血编译
+          make -j$(nproc --all) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- Image dtb.img dtbo.img
+
+      - name: 打包 AnyKernel3 刷机包
+        run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          cp kernel_workspace/out/arch/arm64/boot/Image AnyKernel3/
+          cp kernel_workspace/out/arch/arm64/boot/dts/vendor/qcom/haydn*.dtb AnyKernel3/dtb || true
+          cp kernel_workspace/out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
+          
+          cd AnyKernel3
+          sed -i 's/kernel.string=.*/kernel.string=SKSU Ultra Kernel for Haydn/' anykernel.sh
+          sed -i 's/device.name1=.*/device.name1=haydn/' anykernel.sh
+          sed -i 's/device.name2=.*/device.name2=K40 Pro/' anykernel.sh
+          
+          zip -r9 ../SukiSU-Haydn-Kernel.zip * -x .git README.md *placeholder
 
-      - name: 4. 注入 SukiSU Ultra
-        run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace/android_kernel
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
-
-      - name: 5. 编译内核
-        run: |
-          export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang/bin:$PATH
-          cd $GITHUB_WORKSPACE/kernel_workspace/android_kernel
-
-          make -j$(nproc) CC=clang O=out ARCH=arm64 \
-          CLANG_TRIPLE=aarch64-linux-gnu- \
-          LLVM=1 LLVM_IAS=1 \
-          CROSS_COMPILE=aarch64-buildroot-linux-gnu- \
-          CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-          haydn_defconfig
-
-          make -j$(nproc) CC=clang O=out ARCH=arm64 \
-          CLANG_TRIPLE=aarch64-linux-gnu- \
-          LLVM=1 LLVM_IAS=1 \
-          CROSS_COMPILE=aarch64-linux-android- \
-          CROSS_COMPILE_ARM32=arm-linux-androideabi-
-
-      - name: 6. 打包到 AnyKernel3
-        run: |
-          cd $GITHUB_WORKSPACE/kernel_workspace/android_kernel/out/arch/arm64/boot
-          cp Image.gz-dtb $GITHUB_WORKSPACE/kernel_workspace/AnyKernel3/
-
-      - name: 7. 上传内核
+      - name: 上传编译好的刷机包
         uses: actions/upload-artifact@v4
         with:
-          name: haydn-K40Pro-MIUI14-SukiSU
-          path: kernel_workspace/AnyKernel3/*
-          retention-days: 7
+          name: SukiSU-Haydn-MIUI14-Kernel
+          path: SukiSU-Haydn-Kernel.zip
